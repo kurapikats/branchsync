@@ -103,6 +103,7 @@ Key options:
 - `--target`, `-t`: target branch, default `testing`
 - `--since`, `-d`: Git time expression, default `3 weeks ago`
 - `--prefix`, `-p`: commit message prefix filter
+- `--user`, `-U`: only consider commits by a given author username
 - `--cherry-pick`, `-c`: apply missing commits to the target branch
 - `--push`, `-u`: push the target branch after cherry-picking
 - `--yes`, `-y`: skip confirmation prompts
