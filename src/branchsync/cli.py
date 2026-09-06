@@ -89,10 +89,14 @@ def parse_source_commits(source_ref: str, prefix: str, since: str, user: str | N
         sha, unix_time, commit_date, subject = [item.strip() for item in parts]
         if not matches_prefix(subject, prefix):
             continue
+        try:
+            timestamp = int(unix_time)
+        except ValueError as error:
+            raise BranchSyncError(f"Failed to parse timestamp '{unix_time}': {error}") from error
         commits.append(
             Commit(
                 sha=sha,
-                timestamp=int(unix_time),
+                timestamp=timestamp,
                 date=commit_date,
                 subject=subject,
             )
@@ -143,7 +147,7 @@ def current_branch() -> str:
 
 
 def has_uncommitted_changes() -> bool:
-    return bool(git_output(["git", "status", "--porcelain"], check=False))
+    return bool(git_output(["git", "status", "--porcelain"]))
 
 
 def stash_changes() -> bool:
@@ -155,17 +159,23 @@ def stash_changes() -> bool:
 
 
 def restore_workspace(start_branch: str, stashed: bool) -> None:
-    print(f'Checking out original branch "{start_branch}"...')
-    run_git(["git", "checkout", start_branch])
+    try:
+        run_git(["git", "checkout", start_branch])
+    except BranchSyncError as error:
+        print(f"Warning: failed to restore branch: {error}", file=sys.stderr)
+        return
     if stashed:
         print("Restoring stashed changes...")
-        run_git(["git", "stash", "pop"])
+        try:
+            run_git(["git", "stash", "pop"])
+        except BranchSyncError as error:
+            print(f"Warning: failed to pop stash: {error}", file=sys.stderr)
 
 
 def checkout_and_update_target(target_branch: str) -> None:
     print(f'Checking out target branch "{target_branch}"...')
     run_git(["git", "checkout", target_branch])
-    if git_output(["git", "ls-remote", "--heads", "origin", target_branch], check=False):
+    if git_output(["git", "ls-remote", "--heads", "origin", target_branch]):
         print(f'Pulling latest changes for "{target_branch}"...')
         run_git(["git", "pull", "origin", target_branch])
 
@@ -188,7 +198,7 @@ def cherry_pick_commits(commits: list[Commit], conflict_strategy: str | None) ->
         status = git_output(["git", "status"], check=False)
         if "all conflicts fixed" in status:
             print("  -> Empty cherry-pick detected, skipping.")
-            run_git(["git", "cherry-pick", "--skip"])
+            run_git(["git", "cherry-pick", "--skip"], check=False)
             continue
 
         run_git(["git", "cherry-pick", "--abort"], check=False)
