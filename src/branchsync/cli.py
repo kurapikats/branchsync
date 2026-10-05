@@ -64,17 +64,39 @@ def matches_prefix(subject: str, prefix: str) -> bool:
     )
 
 
-def parse_source_commits(source_ref: str, prefix: str, since: str, user: str | None = None) -> list[Commit]:
+def matches_keyword(subject: str, keyword: str) -> bool:
+    normalized_subject = subject.strip().lower()
+    normalized_keyword = keyword.strip().lower()
+    if not normalized_keyword:
+        return False
+    if normalized_keyword in normalized_subject:
+        return True
+    return normalize_subject(keyword) in normalize_subject(subject)
+
+
+def parse_source_commits(
+    source_ref: str,
+    prefix: str | None = None,
+    since: str = "3 weeks ago",
+    user: str | None = None,
+    keyword: str | None = None,
+) -> list[Commit]:
     cmd = [
         "git",
         "log",
         source_ref,
-        f"--grep={prefix}",
-        "-i",
+    ]
+    if prefix:
+        cmd.extend([f"--grep={prefix}", "-i"])
+    if keyword:
+        cmd.extend([f"--grep={keyword}", "-i"])
+    if prefix and keyword:
+        cmd.append("--all-match")
+    cmd.extend([
         f"--since={since}",
         "--format=%H|%ct|%ad|%s",
         "--date=short",
-    ]
+    ])
     if user:
         cmd.append(f"--author={user}")
     output = git_output(cmd)
@@ -87,7 +109,9 @@ def parse_source_commits(source_ref: str, prefix: str, since: str, user: str | N
         if len(parts) != 4:
             continue
         sha, unix_time, commit_date, subject = [item.strip() for item in parts]
-        if not matches_prefix(subject, prefix):
+        if prefix and not matches_prefix(subject, prefix):
+            continue
+        if keyword and not matches_keyword(subject, keyword):
             continue
         try:
             timestamp = int(unix_time)
@@ -104,16 +128,28 @@ def parse_source_commits(source_ref: str, prefix: str, since: str, user: str | N
     return commits
 
 
-def load_target_subjects(target_ref: str, prefix: str, since: str, user: str | None = None) -> set[str]:
+def load_target_subjects(
+    target_ref: str,
+    prefix: str | None = None,
+    since: str = "3 weeks ago",
+    user: str | None = None,
+    keyword: str | None = None,
+) -> set[str]:
     cmd = [
         "git",
         "log",
         target_ref,
-        f"--grep={prefix}",
-        "-i",
+    ]
+    if prefix:
+        cmd.extend([f"--grep={prefix}", "-i"])
+    if keyword:
+        cmd.extend([f"--grep={keyword}", "-i"])
+    if prefix and keyword:
+        cmd.append("--all-match")
+    cmd.extend([
         f"--since={since}",
         "--format=%s",
-    ]
+    ])
     if user:
         cmd.append(f"--author={user}")
     output = git_output(cmd)
@@ -122,9 +158,19 @@ def load_target_subjects(target_ref: str, prefix: str, since: str, user: str | N
     return {normalize_subject(line) for line in output.splitlines() if line.strip()}
 
 
-def find_missing_commits(source_ref: str, target_ref: str, prefix: str, since: str, user: str | None = None) -> list[Commit]:
-    source_commits = parse_source_commits(source_ref, prefix, since, user=user)
-    target_subjects = load_target_subjects(target_ref, prefix, since, user=user)
+def find_missing_commits(
+    source_ref: str,
+    target_ref: str,
+    prefix: str | None = None,
+    since: str = "3 weeks ago",
+    user: str | None = None,
+    keyword: str | None = None,
+) -> list[Commit]:
+    extra_kwargs = {}
+    if keyword is not None:
+        extra_kwargs["keyword"] = keyword
+    source_commits = parse_source_commits(source_ref, prefix, since, user=user, **extra_kwargs)
+    target_subjects = load_target_subjects(target_ref, prefix, since, user=user, **extra_kwargs)
     missing_commits = [commit for commit in source_commits if normalize_subject(commit.subject) not in target_subjects]
     return sorted(missing_commits, key=lambda commit: commit.timestamp)
 
@@ -217,7 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-s", "--source", default="develop", help="Source branch")
     parser.add_argument("-t", "--target", default="testing", help="Target branch")
     parser.add_argument("-d", "--since", default="3 weeks ago", help="Timeframe for the Git log search")
-    parser.add_argument("-p", "--prefix", required=True, help="Commit prefix filter, for example 'discount:'")
+    parser.add_argument("-p", "--prefix", help="Commit prefix filter, for example 'discount:'")
+    parser.add_argument("-k", "--keyword", help="Commit keyword filter, for example 'discount'")
     parser.add_argument("-U", "--user", help="Filter commits by committer username")
     parser.add_argument("-c", "--cherry-pick", action="store_true", help="Cherry-pick missing commits to the target branch")
     parser.add_argument("-u", "--push", action="store_true", help="Push the target branch after cherry-picking")
@@ -241,10 +288,22 @@ def main() -> int:
 
         source_ref = resolve_branch_ref(args.source)
         target_ref = resolve_branch_ref(args.target)
-        missing_commits = find_missing_commits(source_ref, target_ref, args.prefix, args.since, user=args.user)
+        missing_commits = find_missing_commits(
+            source_ref,
+            target_ref,
+            args.prefix,
+            args.since,
+            user=args.user,
+            keyword=args.keyword,
+        )
 
         if not missing_commits:
-            print("No unmerged commits found for the selected prefix and timeframe.")
+            filter_desc = "filters"
+            if args.prefix and not args.keyword:
+                filter_desc = "prefix"
+            elif args.keyword and not args.prefix:
+                filter_desc = "keyword"
+            print(f"No unmerged commits found for the selected {filter_desc} and timeframe.")
             return 0
 
         print_missing_commits(missing_commits)
